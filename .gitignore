@@ -1,0 +1,7 @@
+mejakita.db
+*.bak
+__pycache__/
+venv/
+.env
+.vscode/
+reset_booking.py
