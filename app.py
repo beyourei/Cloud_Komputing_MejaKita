@@ -13,7 +13,7 @@ from jinja2 import DictLoader
 from werkzeug.security import check_password_hash, generate_password_hash
 
 # ---------------------------------------------------------------- konfigurasi
-DB_PATH = "mejakita.db"
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mejakita.db")
 OPEN_HOUR = 10    # jam buka  (ubah sesuai kebutuhan)
 CLOSE_HOUR = 24   # jam tutup (ubah sesuai kebutuhan)
 MAX_NAME_LEN = 100  # batas panjang nama pelanggan / nama meja (ubah sesuai kebutuhan)
@@ -1704,6 +1704,7 @@ main{max-width:none;margin:0;padding:0}
 
 app.jinja_loader = DictLoader(TEMPLATES)
 
+init_db()
+
 if __name__ == "__main__":
-    init_db()
-    app.run(debug=True)
+    app.run(debug=False)
