@@ -838,10 +838,10 @@ self.addEventListener("fetch", function (e) {
 @app.route("/icon.svg")
 def pwa_icon():
     svg = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-<rect width="512" height="512" rx="96" fill="#143f30"/>
-<circle cx="256" cy="256" r="170" fill="#ffffff"/>
-<circle cx="256" cy="256" r="92" fill="#1d5a44"/>
-<text x="256" y="292" font-family="Arial, sans-serif" font-size="110" font-weight="700" text-anchor="middle" fill="#ffffff">8</text>
+<rect width="512" height="512" rx="96" fill="#0d1b16"/>
+<circle cx="256" cy="256" r="224" fill="none" stroke="#c9a86a" stroke-width="24"/>
+<circle cx="256" cy="256" r="136" fill="#c9a86a"/>
+<text x="256" y="296" font-family="Georgia, serif" font-size="150" font-weight="700" text-anchor="middle" fill="#0d1b16">8</text>
 </svg>"""
     return Response(svg, mimetype="image/svg+xml")
 
@@ -854,6 +854,7 @@ TEMPLATES = {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}MejaKita{% endblock %}</title>
+<link rel="icon" type="image/svg+xml" href="/icon.svg">
 <link rel="manifest" href="/manifest.webmanifest">
 <meta name="theme-color" content="#0b1411">
 <style>
