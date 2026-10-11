@@ -1,0 +1,8 @@
+---
+deployment:
+  tasks:
+    - export DEPLOYPATH=/home/mejakita/MejaKita/
+    - /bin/cp app.py $DEPLOYPATH
+    - /bin/cp passenger_wsgi.py $DEPLOYPATH
+    - /bin/cp -R static $DEPLOYPATH
+    - /bin/touch $DEPLOYPATH/tmp/restart.txt
