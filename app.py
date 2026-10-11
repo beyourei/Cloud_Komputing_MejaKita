@@ -15,7 +15,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 # ---------------------------------------------------------------- konfigurasi
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mejakita.db")
 OPEN_HOUR = 10    # jam buka  (ubah sesuai kebutuhan)
-CLOSE_HOUR = 24   # jam tutup (ubah sesuai kebutuhan)
+CLOSE_HOUR = 26  # jam tutup; lewat tengah malam pakai 24 + jam (26 = tutup 02:00 dini hari)
 MAX_NAME_LEN = 100  # batas panjang nama pelanggan / nama meja (ubah sesuai kebutuhan)
 PHONE_RE = re.compile(r"^\+?[0-9]{9,15}$")  # angka saja, 9-15 digit, boleh diawali +
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{3,30}$")  # username customer: huruf, angka, underscore
@@ -117,17 +117,18 @@ def init_db():
         )
         db.execute(
             "INSERT INTO venues (name, address) VALUES (?, ?)",
-            ("MejaKita Demo Billiard", "Tangerang, Banten, Indonesia"),
+            ("MejaKita Billiard", "Tangerang, Banten, Indonesia"),
         )
         for name, price in [("Meja 1", 40000), ("Meja 2", 40000), ("Meja VIP", 60000)]:
             db.execute(
                 "INSERT INTO tables (venue_id, name, price_per_hour) VALUES (1, ?, ?)",
                 (name, price),
             )
-    # rapihin nama tempat yang dulu berlabel demo/simulasi (database lama)
+    # hapus label demo/simulasi dari nama & alamat tempat (database lama), jalan otomatis saat app start
     db.execute(
         "UPDATE venues SET name = 'MejaKita Billiard', address = 'Tangerang, Banten, Indonesia' "
-        "WHERE name = 'MejaKita Billiard' AND address = 'Tangerang, Banten, Indonesia'"
+        "WHERE lower(name) LIKE '%demo%' OR lower(name) LIKE '%simulasi%' "
+        "OR lower(address) LIKE '%demo%' OR lower(address) LIKE '%simulasi%'"
     )
     # akun kasir demo (dibuat juga di database lama kalau belum ada)
     if db.execute("SELECT 1 FROM users WHERE username = 'kasir'").fetchone() is None:
@@ -231,7 +232,7 @@ def rupiah(value):
 
 @app.template_filter("jam")
 def jam(hour):
-    return "{:02d}:00".format(int(hour))
+    return "{:02d}:00".format(int(hour) % 24)
 
 
 # --------------------------------------------------------------------- logika
@@ -579,6 +580,93 @@ def report():
 
 
 # ------------------------------------------------------------ sisi customer
+# ------------------------------------------------ lupa username / password
+RESET_WINDOW_SECONDS = 600  # waktu untuk mengisi password baru setelah verifikasi (10 menit)
+
+
+def _norm_name(value):
+    return " ".join((value or "").split()).lower()
+
+
+def _norm_phone(value):
+    return re.sub(r"[\s\-]", "", value or "")
+
+
+def _find_customers(full_name, phone):
+    rows = get_db().execute(
+        "SELECT * FROM users WHERE role = 'customer' AND phone = ?", (_norm_phone(phone),)
+    ).fetchall()
+    return [r for r in rows if _norm_name(r["full_name"]) == _norm_name(full_name)]
+
+
+@app.route("/forgot/<mode>", methods=["GET", "POST"])
+def forgot(mode):
+    if mode not in ("username", "password"):
+        abort(404)
+    form = {}
+    usernames = None
+    if request.method == "POST":
+        full_name = request.form.get("full_name", "").strip()
+        phone = request.form.get("phone", "")
+        username = request.form.get("username", "").strip()
+        form = {"full_name": full_name, "phone": _norm_phone(phone), "username": username}
+        locked = login_lock_minutes("!forgot")
+        if locked:
+            flash("Terlalu banyak percobaan. Coba lagi dalam {} menit.".format(locked))
+            return render_template("forgot.html", mode=mode, form=form, usernames=None)
+        matches = _find_customers(full_name, phone)
+        if mode == "username":
+            if matches:
+                clear_login_failures("!forgot")
+                usernames = [m["username"] for m in matches]
+            else:
+                record_login_failure("!forgot")
+                flash("Data tidak cocok. Periksa nama lengkap dan No. WhatsApp yang dipakai saat daftar.")
+        else:
+            user = next((m for m in matches if m["username"].lower() == username.lower()), None)
+            if user:
+                clear_login_failures("!forgot")
+                session["reset_uid"] = user["id"]
+                session["reset_ts"] = time.time()
+                return redirect(url_for("reset_password"))
+            record_login_failure("!forgot")
+            flash("Data tidak cocok. Periksa username, nama lengkap, dan No. WhatsApp yang dipakai saat daftar.")
+    return render_template("forgot.html", mode=mode, form=form, usernames=usernames)
+
+
+@app.route("/reset", methods=["GET", "POST"])
+def reset_password():
+    uid = session.get("reset_uid")
+    ts = session.get("reset_ts", 0)
+    if not uid or time.time() - ts > RESET_WINDOW_SECONDS:
+        session.pop("reset_uid", None)
+        session.pop("reset_ts", None)
+        flash("Sesi reset password habis. Ulangi verifikasi.")
+        return redirect(url_for("forgot", mode="password"))
+    if request.method == "POST":
+        password = request.form.get("password", "")
+        confirm = request.form.get("confirm", "")
+        if len(password) < MIN_PASSWORD_LEN:
+            flash("Password minimal {} karakter.".format(MIN_PASSWORD_LEN))
+        elif password != confirm:
+            flash("Konfirmasi password tidak sama.")
+        else:
+            db = get_db()
+            db.execute(
+                "UPDATE users SET password_hash = ? WHERE id = ? AND role = 'customer'",
+                (generate_password_hash(password), uid),
+            )
+            row = db.execute("SELECT username FROM users WHERE id = ?", (uid,)).fetchone()
+            db.commit()
+            if row:
+                clear_login_failures(row["username"])
+            session.pop("reset_uid", None)
+            session.pop("reset_ts", None)
+            flash("Password berhasil diubah. Silakan masuk dengan password baru.")
+            return redirect(url_for("login"))
+    return render_template("reset.html", min_password=MIN_PASSWORD_LEN)
+
+
 @app.route("/register", methods=["GET", "POST"])
 def register():
     form = {}
@@ -732,6 +820,7 @@ def customer_book():
         "table_id": request.args.get("table_id", type=int),
         "hour": request.args.get("hour", type=int),
         "date": pre_date,
+        "duration": max(1, min(request.args.get("duration", 1, type=int), CLOSE_HOUR - OPEN_HOUR)),
     }
     return render_template("c_book.html", me=me, tables=tables_, pre=pre, today=today.isoformat())
 
@@ -1373,15 +1462,59 @@ TEMPLATES.update({
     "cbase.html": """{% extends "base.html" %}
 {% block customer_nav %}
 <style>
-.slots{display:flex;flex-wrap:wrap;gap:8px}
-.slot{display:inline-block;min-width:70px;text-align:center;padding:10px 6px;border-radius:6px;font-weight:600;font-size:.9rem;text-decoration:none}
-a.slot.free{background:#dcebe4;color:#143f30;border:1px solid #1d5a44}
-a.slot.free:hover{background:#1d5a44;color:#fff}
-.slot.taken{background:#8a5a2b;color:#fff}
-.slot.past{background:#e4e7e6;color:#8a948f}
-.table-card{background:#fff;border:1px solid var(--line);border-radius:8px;padding:16px;margin-bottom:14px}
-.table-card h3{margin:0}
-.table-card p{margin:2px 0 12px}
+.eyebrow{margin:0 0 6px;color:#d6b574;font-size:.72rem;letter-spacing:.24em;text-transform:uppercase;font-weight:600}
+.chips{display:flex;gap:10px;overflow-x:auto;padding:4px 2px 12px;margin:16px 0 4px;scrollbar-width:thin}
+.chip{flex:0 0 auto;min-width:74px;text-align:center;padding:10px 14px;border-radius:14px;border:1px solid #2b4035;background:linear-gradient(145deg,#17231d,#111a16);color:#aabbb2;text-decoration:none;transition:transform .2s,border-color .2s,color .2s,box-shadow .2s}
+.chip small{display:block;font-size:.68rem;letter-spacing:.1em;text-transform:uppercase}
+.chip b{display:block;font-size:1.3rem;color:#f0eadc;line-height:1.3}
+.chip:hover{transform:translateY(-3px);border-color:#d6b574;color:#f4e7c8;box-shadow:0 8px 20px rgba(0,0,0,.3)}
+.chip.on{background:linear-gradient(135deg,#dfc184,#a98549);border-color:transparent;color:#2a2112}
+.chip.on b{color:#111a14}
+.datepick{display:flex;flex-wrap:wrap;align-items:end;gap:12px;margin:6px 0 0}
+.datepick > div{flex:0 1 220px}
+.datepick .btn{margin-top:0}
+.legend{display:flex;flex-wrap:wrap;gap:8px 18px;margin:14px 0 6px;color:#9aada2;font-size:.85rem}
+.legend span{display:inline-flex;align-items:center;gap:8px}
+.legend i{width:14px;height:14px;border-radius:5px;display:inline-block;border:1px solid transparent}
+.legend .d-open{background:#1d4834;border-color:#2f6a50}
+.legend .d-sel{background:linear-gradient(135deg,#dfc184,#a98549)}
+.legend .d-taken{background:repeating-linear-gradient(135deg,#5a3d24 0 4px,#46301d 4px 8px)}
+.legend .d-past{background:#131b17;border:1px dashed #3a4e43}
+.hint{margin:0 0 24px;color:#9aada2;font-size:.9rem}
+.table-card{position:relative;overflow:hidden;background:linear-gradient(145deg,#17231d,#0f1814);border:1px solid #2b4035;border-radius:20px;padding:24px 26px 26px;margin-bottom:20px;box-shadow:0 14px 35px rgba(0,0,0,.22);transition:transform .25s,border-color .25s,box-shadow .25s;animation:rise .55s both}
+.table-card:after{content:"";position:absolute;width:150px;height:150px;right:-60px;top:-70px;border-radius:50%;border:1px solid #d6b57430;box-shadow:0 0 0 16px #d6b57408,0 0 0 32px #d6b57405;pointer-events:none}
+.table-card:hover{transform:translateY(-3px);border-color:#4b6b58;box-shadow:0 20px 44px rgba(0,0,0,.32)}
+.table-card.picked{border-color:#d6b574;box-shadow:0 0 0 1px #d6b57466,0 20px 44px rgba(0,0,0,.34)}
+.table-card.vip{border-color:#5a4a2a;background:linear-gradient(145deg,#1d2119,#120f0a)}
+.tc-head{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap;margin-bottom:18px;position:relative;z-index:1}
+.table-card h3{margin:0;font-family:Georgia,"Times New Roman",serif;font-size:1.65rem;font-weight:600;letter-spacing:.01em;color:#f0dfb6;display:flex;align-items:center;gap:10px}
+.vip-tag{font:600 .62rem system-ui,sans-serif;letter-spacing:.2em;padding:4px 9px;border-radius:20px;border:1px solid #d6b574;color:#d6b574}
+.tc-price{margin:4px 0 0;color:#9aada2;font-size:.95rem}
+.tc-price b{color:#dfc184;font-size:1.05rem}
+.tc-count{padding:6px 14px;border-radius:20px;background:#17382a;color:#bde2c9;font-size:.82rem;font-weight:600;border:1px solid #2f6a50}
+.tc-count.full{background:#3a2323;color:#ffb7b7;border-color:#6d3a3a}
+.slots{display:grid;grid-template-columns:repeat(auto-fill,minmax(88px,1fr));gap:10px;position:relative;z-index:1}
+.slot{display:block;text-align:center;padding:13px 6px;border-radius:12px;font-weight:600;font-size:.95rem;font-variant-numeric:tabular-nums;text-decoration:none;border:1px solid transparent;transition:transform .18s,box-shadow .18s,border-color .18s,background .18s,color .18s}
+a.slot.open{background:linear-gradient(145deg,#1f4c37,#163a2a);border-color:#2f6a50;color:#d3f0df;cursor:pointer}
+a.slot.open:hover{transform:translateY(-3px);border-color:#d6b574;color:#f6e9c9;box-shadow:0 10px 22px rgba(0,0,0,.38),0 0 0 1px #d6b57466}
+a.slot.open:active{transform:translateY(0) scale(.97)}
+a.slot.open.sel{background:linear-gradient(135deg,#e6c98c,#a98549);color:#1a1409;border-color:transparent;box-shadow:0 8px 24px rgba(214,181,116,.35)}
+.slot.taken{background:repeating-linear-gradient(135deg,#5a3d24 0 6px,#46301d 6px 12px);color:#c9ab86;border-color:#6d4a2c;cursor:not-allowed;opacity:.85}
+.slot.past{background:#111815;color:#566860;border:1px dashed #2c3d34;cursor:not-allowed}
+.pickbar{position:fixed;left:252px;right:0;bottom:0;z-index:30;display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;padding:16px clamp(22px,4vw,58px);background:linear-gradient(180deg,rgba(16,29,24,.92),rgba(8,14,12,.98));backdrop-filter:blur(10px);border-top:1px solid #d6b57455;box-shadow:0 -16px 40px rgba(0,0,0,.45);transform:translateY(115%);transition:transform .35s cubic-bezier(.2,.8,.2,1)}
+.pickbar.show{transform:none}
+.pick-info{display:flex;flex-direction:column;gap:2px}
+.pick-name{font-family:Georgia,serif;font-size:1.25rem;color:#f0dfb6}
+.pick-range{color:#aabbb2;font-size:.9rem}
+.pick-total{font-size:1.5rem;font-weight:700;color:#dfc184;letter-spacing:-.02em}
+.pick-actions{display:flex;align-items:center;gap:12px}
+.pick-actions .btn{margin:0;text-decoration:none;display:inline-block}
+.pick-clear{background:none;border:1px solid #405749;color:#c7d3cc;border-radius:9px;padding:10px 14px;cursor:pointer;font:inherit}
+.pick-clear:hover{border-color:#d6b574;color:#f4e7c8}
+body.has-pick main{padding-bottom:130px}
+@keyframes rise{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+@media(max-width:760px){.pickbar{left:0}.table-card{padding:20px 18px}.slots{grid-template-columns:repeat(auto-fill,minmax(76px,1fr))}}
+@media(prefers-reduced-motion:reduce){.table-card{animation:none}.slot,.chip,.table-card,.pickbar{transition:none}}
 </style>
 <nav>
   <span class="brand">MejaKita</span>
@@ -1422,28 +1555,132 @@ a.slot.free:hover{background:#1d5a44;color:#fff}
     "c_home.html": """{% extends "cbase.html" %}
 {% block title %}Cari Meja - MejaKita{% endblock %}
 {% block content %}
+<p class="eyebrow">Reservasi meja billiard</p>
 <h1>Cari meja billiard</h1>
 {% if venue %}<p class="muted">{{ venue.name }}{% if venue.address %}, {{ venue.address }}{% endif %}. Buka {{ open_hour|jam }} sampai {{ close_hour|jam }}.</p>{% endif %}
-<form method="get" class="card row">
-  <div><label for="date">Tanggal</label><input id="date" name="date" type="date" min="{{ today }}" value="{{ chosen }}"></div>
-  <div><button class="btn" type="submit">Lihat jam kosong</button></div>
+<div class="chips" id="datechips" aria-label="Pilih tanggal cepat"></div>
+<form method="get" class="datepick">
+  <div><label for="date">Atau pilih tanggal lain</label><input id="date" name="date" type="date" min="{{ today }}" value="{{ chosen }}"></div>
+  <button class="btn" type="submit">Lihat jam kosong</button>
 </form>
-<p class="muted">Ketuk jam hijau untuk memesan. Cokelat = sudah dipesan, abu-abu = sudah lewat.</p>
+<div class="legend">
+  <span><i class="d-open"></i>Kosong</span><span><i class="d-sel"></i>Dipilih</span><span><i class="d-taken"></i>Sudah dipesan</span><span><i class="d-past"></i>Sudah lewat</span>
+</div>
+<p class="hint">Ketuk jam untuk memilih. Ketuk jam berikutnya untuk menambah durasi, lalu lanjut pesan.</p>
 {% for t in tables %}
-<div class="table-card">
-  <h3>{{ t.name }}</h3>
-  <p class="muted">{{ t.price_per_hour|rp }} per jam</p>
+{% set is_vip = 'VIP' in t.name|upper %}
+{% set ns = namespace(n=0) %}
+{% for h in hours %}{% if h not in busy[t.id] and not (is_today and h <= now_hour) %}{% set ns.n = ns.n + 1 %}{% endif %}{% endfor %}
+<div class="table-card{% if is_vip %} vip{% endif %}" data-table-id="{{ t.id }}" data-name="{{ t.name }}" data-price="{{ t.price_per_hour }}" style="animation-delay:{{ loop.index0 * 80 }}ms">
+  <div class="tc-head">
+    <div>
+      <h3>{{ t.name }}{% if is_vip %}<span class="vip-tag">VIP</span>{% endif %}</h3>
+      <p class="tc-price"><b>{{ t.price_per_hour|rp }}</b> per jam</p>
+    </div>
+    <span class="tc-count{% if ns.n == 0 %} full{% endif %}">{% if ns.n == 0 %}Penuh{% else %}{{ ns.n }} jam kosong{% endif %}</span>
+  </div>
   <div class="slots">
     {% for h in hours %}
-      {% if h in busy[t.id] %}<span class="slot taken">{{ h|jam }}</span>
-      {% elif is_today and h <= now_hour %}<span class="slot past">{{ h|jam }}</span>
-      {% else %}<a class="slot free" href="{{ url_for('customer_book', table_id=t.id, date=chosen, hour=h) }}">{{ h|jam }}</a>{% endif %}
+      {% if h in busy[t.id] %}<span class="slot taken" title="Sudah dipesan">{{ h|jam }}</span>
+      {% elif is_today and h <= now_hour %}<span class="slot past" title="Sudah lewat">{{ h|jam }}</span>
+      {% else %}<a class="slot open" data-hour="{{ h }}" title="Pilih {{ h|jam }}" href="{{ url_for('customer_book', table_id=t.id, date=chosen, hour=h) }}">{{ h|jam }}</a>{% endif %}
     {% endfor %}
   </div>
 </div>
 {% else %}
 <p class="muted">Belum ada meja yang tersedia.</p>
 {% endfor %}
+
+<div class="pickbar" id="pickbar" role="region" aria-live="polite" aria-label="Ringkasan pilihan">
+  <div class="pick-info">
+    <span class="pick-name" id="pickname"></span>
+    <span class="pick-range" id="pickrange"></span>
+  </div>
+  <span class="pick-total" id="picktotal"></span>
+  <div class="pick-actions">
+    <button type="button" class="pick-clear" id="pickclear">Batal pilih</button>
+    <a class="btn" id="pickgo" href="#">Lanjut pesan</a>
+  </div>
+</div>
+
+<script>
+(function () {
+  var BOOK_URL = "{{ url_for('customer_book') }}";
+  var CHOSEN = "{{ chosen }}";
+  var TODAY = "{{ today }}";
+  var bar = document.getElementById("pickbar");
+  var go = document.getElementById("pickgo");
+  var sel = null;
+
+  function pad(n) { return n < 10 ? "0" + n : "" + n; }
+  function hh(h) { return pad(h % 24) + ":00"; }
+
+  var chips = document.getElementById("datechips");
+  var p = TODAY.split("-");
+  var names = ["Min", "Sen", "Sel", "Rab", "Kam", "Jum", "Sab"];
+  for (var i = 0; i < 7; i++) {
+    var d = new Date(+p[0], +p[1] - 1, +p[2] + i);
+    var iso = d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
+    var a = document.createElement("a");
+    a.href = "?date=" + iso;
+    a.className = "chip" + (iso === CHOSEN ? " on" : "");
+    var top = i === 0 ? "Hari ini" : (i === 1 ? "Besok" : names[d.getDay()]);
+    a.innerHTML = "<small>" + top + "</small><b>" + d.getDate() + "</b>";
+    chips.appendChild(a);
+  }
+
+  var dateInput = document.getElementById("date");
+  if (dateInput) {
+    dateInput.addEventListener("change", function () { if (this.value) { this.form.submit(); } });
+  }
+
+  function render() {
+    document.querySelectorAll(".table-card.picked").forEach(function (c) { c.classList.remove("picked"); });
+    document.querySelectorAll(".slot.sel").forEach(function (s) { s.classList.remove("sel"); });
+    if (!sel) {
+      bar.classList.remove("show");
+      document.body.classList.remove("has-pick");
+      return;
+    }
+    sel.card.classList.add("picked");
+    sel.card.querySelectorAll("a.slot.open").forEach(function (s) {
+      var h = +s.dataset.hour;
+      if (h >= sel.start && h <= sel.end) { s.classList.add("sel"); }
+    });
+    var dur = sel.end - sel.start + 1;
+    var price = +sel.card.dataset.price;
+    document.getElementById("pickname").textContent = sel.card.dataset.name;
+    document.getElementById("pickrange").textContent = hh(sel.start) + " - " + hh(sel.end + 1) + " (" + dur + " jam)";
+    document.getElementById("picktotal").textContent = "Rp" + (price * dur).toLocaleString("id-ID");
+    go.href = BOOK_URL + "?table_id=" + sel.card.dataset.tableId + "&date=" + CHOSEN + "&hour=" + sel.start + "&duration=" + dur;
+    bar.classList.add("show");
+    document.body.classList.add("has-pick");
+  }
+
+  document.addEventListener("click", function (e) {
+    var el = e.target.closest ? e.target.closest("a.slot.open") : null;
+    if (!el) { return; }
+    e.preventDefault();
+    var card = el.closest(".table-card");
+    var h = +el.dataset.hour;
+    if (sel && sel.card === card) {
+      if (h === sel.start && h === sel.end) { sel = null; render(); return; }
+      if (h > sel.end) {
+        var ok = true;
+        for (var x = sel.end + 1; x <= h; x++) {
+          if (!card.querySelector('a.slot.open[data-hour="' + x + '"]')) { ok = false; break; }
+        }
+        if (ok) { sel.end = h; render(); return; }
+      }
+    }
+    sel = { card: card, start: h, end: h };
+    render();
+  });
+
+  document.getElementById("pickclear").addEventListener("click", function () { sel = null; render(); });
+  document.addEventListener("keydown", function (e) { if (e.key === "Escape" && sel) { sel = null; render(); } });
+})();
+</script>
 {% endblock %}""",
 
     "c_book.html": """{% extends "cbase.html" %}
@@ -1464,7 +1701,7 @@ a.slot.free:hover{background:#1d5a44;color:#fff}
       <select id="start_hour" name="start_hour">
         {% for h in range(open_hour, close_hour) %}<option value="{{ h }}" {% if h == pre.hour %}selected{% endif %}>{{ h|jam }}</option>{% endfor %}
       </select></div>
-    <div><label for="duration">Durasi (jam)</label><input id="duration" name="duration" type="number" min="1" max="{{ close_hour - open_hour }}" value="1" required></div>
+    <div><label for="duration">Durasi (jam)</label><input id="duration" name="duration" type="number" min="1" max="{{ close_hour - open_hour }}" value="{{ pre.duration }}" required></div>
   </div>
   <button class="btn" type="submit">Pesan sekarang</button>
 </form>
@@ -1656,6 +1893,11 @@ main{max-width:none;margin:0;padding:0}
   <section class="auth-panel">
     <div class="auth-card">
       <div id="auth-flash"></div>
+      {% block auth_form %}{% endblock %}
+    </div>
+  </section>
+</div>
+<script>
 (function () {
   var EYE = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>';
   var EYE_OFF = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.94 17.94A10.9 10.9 0 0 1 12 19C5 19 1 12 1 12a18.5 18.5 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.1 9.1 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
@@ -1678,12 +1920,6 @@ main{max-width:none;margin:0;padding:0}
     wrap.appendChild(btn);
   });
 })();
-</script>
-      {% block auth_form %}{% endblock %}
-    </div>
-  </section>
-</div>
-<script>
 (function () {
   var box = document.getElementById("auth-flash");
   if (!box) { return; }
@@ -1705,6 +1941,7 @@ main{max-width:none;margin:0;padding:0}
   <input id="password" name="password" type="password" required autocomplete="current-password">
   <button class="btn-gold" type="submit">Masuk</button>
 </form>
+<p class="auth-alt"><a href="{{ url_for('forgot', mode='username') }}">Lupa username?</a> &middot; <a href="{{ url_for('forgot', mode='password') }}">Lupa password?</a></p>
 <p class="auth-alt">Belum punya akun? <a href="{{ url_for('register') }}">Daftar sebagai pelanggan</a></p>
 {% endblock %}""",
 
@@ -1728,6 +1965,52 @@ main{max-width:none;margin:0;padding:0}
   <button class="btn-gold" type="submit">Buat akun</button>
 </form>
 <p class="auth-alt">Sudah punya akun? <a href="{{ url_for('login') }}">Masuk</a></p>
+{% endblock %}""",
+
+    "forgot.html": """{% extends "auth_base.html" %}
+{% block title %}{% if mode == 'username' %}Lupa username{% else %}Lupa password{% endif %} - MejaKita{% endblock %}
+{% block auth_form %}
+{% if mode == 'username' %}
+<h1>Lupa username</h1>
+<p class="lead">Masukkan nama lengkap dan No. WhatsApp yang dipakai saat daftar.</p>
+{% else %}
+<h1>Lupa password</h1>
+<p class="lead">Verifikasi dulu dengan data saat daftar, lalu buat password baru.</p>
+{% endif %}
+{% if usernames %}
+<div class="flash">Username kamu: <b>{{ usernames|join(', ') }}</b></div>
+<p class="auth-alt"><a href="{{ url_for('login') }}">Kembali masuk</a> &middot; <a href="{{ url_for('forgot', mode='password') }}">Lupa password juga?</a></p>
+{% else %}
+<form method="post">
+  <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+  {% if mode == 'password' %}
+  <label for="username">Username</label>
+  <input id="username" name="username" value="{{ form.get('username', '') }}" required autofocus autocomplete="username">
+  {% endif %}
+  <label for="full_name">Nama lengkap</label>
+  <input id="full_name" name="full_name" value="{{ form.get('full_name', '') }}" required autocomplete="name">
+  <label for="phone">No. WhatsApp</label>
+  <input id="phone" name="phone" value="{{ form.get('phone', '') }}" inputmode="tel" required placeholder="contoh: 081234567890" autocomplete="tel">
+  <button class="btn-gold" type="submit">{% if mode == 'username' %}Cari username{% else %}Verifikasi{% endif %}</button>
+</form>
+<p class="auth-alt">Akun admin atau kasir? Hubungi pengelola sistem untuk reset password.</p>
+<p class="auth-alt"><a href="{{ url_for('login') }}">Kembali masuk</a></p>
+{% endif %}
+{% endblock %}""",
+
+    "reset.html": """{% extends "auth_base.html" %}
+{% block title %}Password baru - MejaKita{% endblock %}
+{% block auth_form %}
+<h1>Password baru</h1>
+<p class="lead">Buat password baru untuk akunmu.</p>
+<form method="post">
+  <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+  <label for="password">Password baru (minimal {{ min_password }} karakter)</label>
+  <input id="password" name="password" type="password" minlength="{{ min_password }}" required autofocus autocomplete="new-password">
+  <label for="confirm">Ulangi password</label>
+  <input id="confirm" name="confirm" type="password" required autocomplete="new-password">
+  <button class="btn-gold" type="submit">Simpan password</button>
+</form>
 {% endblock %}""",
 })
 

@@ -5,3 +5,7 @@ venv/
 .env
 .vscode/
 reset_booking.py
+*.db
+*.db.bak*
+*.bak
+*.zip
