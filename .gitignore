@@ -9,3 +9,8 @@ reset_booking.py
 *.db.bak*
 *.bak
 *.zip
+*.db
+*.db.bak*
+*.bak
+*.zip
+reset_staff.py
