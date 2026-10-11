@@ -1612,6 +1612,11 @@ main{max-width:none;margin:0;padding:0}
 .auth-card input::placeholder{color:rgba(157,176,167,.6)}
 .auth-card input:focus{outline:none;border-bottom-color:var(--gold);box-shadow:0 1px 0 0 var(--gold)}
 .auth-card input:-webkit-autofill{-webkit-text-fill-color:var(--cream);box-shadow:0 0 0 1000px #0e1f19 inset;caret-color:var(--cream)}
+.pw-wrap{position:relative}
+.pw-wrap input{padding-right:38px}
+.pw-toggle{position:absolute;right:0;top:50%;transform:translateY(-50%);padding:6px;border:0;background:none;color:var(--muted);line-height:0;cursor:pointer}
+.pw-toggle:hover{color:var(--gold)}
+.pw-toggle:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
 .btn-gold{display:block;width:100%;margin-top:34px;padding:14px;border:0;border-radius:2px;background:linear-gradient(135deg,#d9bc80,#ad8a4c);color:#10231b;font:inherit;font-size:.85rem;font-weight:700;letter-spacing:.16em;text-transform:uppercase;cursor:pointer}
 .btn-gold:hover{filter:brightness(1.08)}
 .btn-gold:focus-visible{outline:2px solid var(--cream);outline-offset:3px}
@@ -1651,6 +1656,29 @@ main{max-width:none;margin:0;padding:0}
   <section class="auth-panel">
     <div class="auth-card">
       <div id="auth-flash"></div>
+(function () {
+  var EYE = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>';
+  var EYE_OFF = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.94 17.94A10.9 10.9 0 0 1 12 19C5 19 1 12 1 12a18.5 18.5 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.1 9.1 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
+  document.querySelectorAll('.auth-card input[type="password"]').forEach(function (input) {
+    var wrap = document.createElement("div");
+    wrap.className = "pw-wrap";
+    input.parentNode.insertBefore(wrap, input);
+    wrap.appendChild(input);
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "pw-toggle";
+    btn.setAttribute("aria-label", "Tampilkan password");
+    btn.innerHTML = EYE;
+    btn.addEventListener("click", function () {
+      var show = input.type === "password";
+      input.type = show ? "text" : "password";
+      btn.innerHTML = show ? EYE_OFF : EYE;
+      btn.setAttribute("aria-label", show ? "Sembunyikan password" : "Tampilkan password");
+    });
+    wrap.appendChild(btn);
+  });
+})();
+</script>
       {% block auth_form %}{% endblock %}
     </div>
   </section>
