@@ -1638,11 +1638,11 @@ main{max-width:none;margin:0;padding:0}
       </div>
       <div class="hero">
         <p class="eyebrow">Reservasi meja billiard</p>
-        <h2>Setiap permainan dimulai dari meja yang tepat.</h2>
+        <h2>Fokus ke permainanmu, satu meja, satu game seru.</h2>
         <ul class="perks">
-          <li>Jam kosong terlihat langsung</li>
-          <li>Booking dan bayar dalam hitungan menit</li>
-          <li>Kode dan riwayat booking tersimpan rapi</li>
+          <li>Ketersediaan jam terlihat real-time</li>
+          <li>Booking dan pembayaran selesai dalam hitungan menit</li>
+          <li>Tinggal datang dan main, mejamu sudah aman</li>
         </ul>
       </div>
     </div>
